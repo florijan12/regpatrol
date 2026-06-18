@@ -1,0 +1,55 @@
+name: Daily RegPatrol Run
+
+on:
+  # Run every day at 06:00 UTC (08:00 in Slovenia in summer / 07:00 in winter)
+  schedule:
+    - cron: '0 6 * * *'
+  # Also allow manual runs from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-regpatrol:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # allow the workflow to commit alerts.html back to the repo
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run regpatrol.py
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          EXA_API_KEY:    ${{ secrets.EXA_API_KEY }}
+          NETLIFY_TOKEN:  ${{ secrets.NETLIFY_TOKEN }}
+          NETLIFY_SITE:   ${{ secrets.NETLIFY_SITE }}
+        run: python regpatrol.py
+
+      - name: Commit updated alerts.html to /alerts/index.html
+        run: |
+          # Move generated alerts.html into the deploy folder Netlify reads
+          mkdir -p alerts
+          if [ -f alerts.html ]; then
+            mv alerts.html alerts/index.html
+          fi
+
+          git config user.name  "regpatrol-bot"
+          git config user.email "bot@regpatrol.com"
+
+          if [ -n "$(git status --porcelain alerts/index.html)" ]; then
+            git add alerts/index.html
+            git commit -m "chore: daily alerts.html refresh [skip ci]"
+            git push
+          else
+            echo "No changes to alerts.html — skipping commit."
+          fi
