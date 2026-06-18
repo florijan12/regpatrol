@@ -51,14 +51,29 @@ jobs:
             exit 0
           fi
 
-          git add alerts/index.html
-          git commit -m "chore: daily alerts.html refresh [skip ci]"
+          # Strategy: alerts/index.html is regenerated fresh every run from
+          # Airtable, so our version is authoritative. We DON'T want to merge
+          # with whatever's on main — we want to overwrite it.
+          # Approach: stash our generated file, sync to latest main, restore,
+          # commit, push. Retry up to 3 times in case of races.
+          cp alerts/index.html /tmp/alerts-index.html
 
-          # Try to push up to 3 times in case of race conditions
-          # (user pushing manually during the run)
           for attempt in 1 2 3; do
             echo "Push attempt $attempt..."
-            git pull --rebase origin main || true
+            # Reset to the latest remote main so our local repo is in sync
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Restore our freshly generated alerts.html
+            mkdir -p alerts
+            cp /tmp/alerts-index.html alerts/index.html
+
+            # Commit and push
+            git add alerts/index.html
+            git commit -m "chore: daily alerts.html refresh [skip ci]" || {
+              echo "Nothing to commit after reset — file already up to date."
+              exit 0
+            }
             if git push origin main; then
               echo "✅ Push succeeded on attempt $attempt"
               exit 0
