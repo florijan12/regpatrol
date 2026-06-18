@@ -1,0 +1,85 @@
+name: Daily RegPatrol Run
+
+on:
+  # Run every day at 06:00 UTC (08:00 in Slovenia in summer / 07:00 in winter)
+  schedule:
+    - cron: '0 6 * * *'
+  # Also allow manual runs from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  run-regpatrol:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # allow the workflow to commit alerts.html back to the repo
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run regpatrol.py
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          EXA_API_KEY:    ${{ secrets.EXA_API_KEY }}
+          NETLIFY_TOKEN:  ${{ secrets.NETLIFY_TOKEN }}
+          NETLIFY_SITE:   ${{ secrets.NETLIFY_SITE }}
+        run: python regpatrol.py
+
+      - name: Commit updated alerts.html to /alerts/index.html
+        run: |
+          # Move generated alerts.html into the deploy folder Netlify reads
+          mkdir -p alerts
+          if [ -f alerts.html ]; then
+            mv alerts.html alerts/index.html
+          fi
+
+          git config user.name  "regpatrol-bot"
+          git config user.email "bot@regpatrol.com"
+
+          if [ -z "$(git status --porcelain alerts/index.html)" ]; then
+            echo "No changes to alerts.html — skipping commit."
+            exit 0
+          fi
+
+          # Strategy: alerts/index.html is regenerated fresh every run from
+          # Airtable, so our version is authoritative. We DON'T want to merge
+          # with whatever's on main — we want to overwrite it.
+          # Approach: stash our generated file, sync to latest main, restore,
+          # commit, push. Retry up to 3 times in case of races.
+          cp alerts/index.html /tmp/alerts-index.html
+
+          for attempt in 1 2 3; do
+            echo "Push attempt $attempt..."
+            # Reset to the latest remote main so our local repo is in sync
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Restore our freshly generated alerts.html
+            mkdir -p alerts
+            cp /tmp/alerts-index.html alerts/index.html
+
+            # Commit and push
+            git add alerts/index.html
+            git commit -m "chore: daily alerts.html refresh [skip ci]" || {
+              echo "Nothing to commit after reset — file already up to date."
+              exit 0
+            }
+            if git push origin main; then
+              echo "✅ Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          echo "❌ Could not push after 3 attempts."
+          exit 1
