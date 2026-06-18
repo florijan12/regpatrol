@@ -46,14 +46,25 @@ jobs:
           git config user.name  "regpatrol-bot"
           git config user.email "bot@regpatrol.com"
 
-          if [ -n "$(git status --porcelain alerts/index.html)" ]; then
-            git add alerts/index.html
-            git commit -m "chore: daily alerts.html refresh [skip ci]"
-            # Pull any commits pushed during this run, then push our update
-            # (handles the race condition where the workflow takes a minute
-            # and the user happens to commit something else in that window)
-            git pull --rebase origin main
-            git push
-          else
+          if [ -z "$(git status --porcelain alerts/index.html)" ]; then
             echo "No changes to alerts.html — skipping commit."
+            exit 0
           fi
+
+          git add alerts/index.html
+          git commit -m "chore: daily alerts.html refresh [skip ci]"
+
+          # Try to push up to 3 times in case of race conditions
+          # (user pushing manually during the run)
+          for attempt in 1 2 3; do
+            echo "Push attempt $attempt..."
+            git pull --rebase origin main || true
+            if git push origin main; then
+              echo "✅ Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          echo "❌ Could not push after 3 attempts."
+          exit 1
