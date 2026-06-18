@@ -556,21 +556,54 @@ def run_fda_recalls(api):
     print("  TASK 1c — FDA RECALLS (direct scrape)")
     print("─" * 60)
 
-    # FDA blocks anything that looks too bot-like — use a real browser UA
+    # FDA's "abuse detection" blocks bot-looking requests, especially from cloud IPs
+    # (GitHub Actions, AWS, etc.). Send a full set of realistic browser headers
+    # and retry with backoff if blocked.
+    import time
     browser_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                  "image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": "https://www.fda.gov/",
     }
 
-    try:
-        print(f"\n📡 Fetching: {FDA_RECALLS_PAGE_URL}")
-        resp = requests.get(FDA_RECALLS_PAGE_URL, headers=browser_headers, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"  ❌ Failed to fetch FDA recalls page: {e}")
+    resp = None
+    for attempt in range(3):
+        try:
+            print(f"\n📡 Fetching: {FDA_RECALLS_PAGE_URL}" + (f" (attempt {attempt+1})" if attempt else ""))
+            resp = requests.get(FDA_RECALLS_PAGE_URL, headers=browser_headers, timeout=60,
+                                allow_redirects=True)
+            # Treat the abuse-detection redirect explicitly — its status is 200 but the
+            # response body is the apology page, so check the final URL.
+            if "abuse-detection-apology" in (resp.url or "") or resp.status_code == 404:
+                raise requests.HTTPError(
+                    f"FDA blocked the request as bot (redirected to {resp.url})"
+                )
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            print(f"  ⚠️  Attempt {attempt+1} failed: {e}")
+            resp = None
+            if attempt < 2:
+                wait = (attempt + 1) * 5
+                print(f"  ⏳ Waiting {wait}s before retry...")
+                time.sleep(wait)
+    if resp is None:
+        print(f"  ❌ Failed to fetch FDA recalls page after 3 attempts. Skipping FDA recalls for this run.")
         return
 
     soup = BeautifulSoup(resp.text, "html.parser")
