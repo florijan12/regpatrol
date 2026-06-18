@@ -49,6 +49,10 @@ jobs:
           if [ -n "$(git status --porcelain alerts/index.html)" ]; then
             git add alerts/index.html
             git commit -m "chore: daily alerts.html refresh [skip ci]"
+            # Pull any commits pushed during this run, then push our update
+            # (handles the race condition where the workflow takes a minute
+            # and the user happens to commit something else in that window)
+            git pull --rebase origin main
             git push
           else
             echo "No changes to alerts.html — skipping commit."
